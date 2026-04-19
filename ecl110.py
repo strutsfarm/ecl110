@@ -1,5 +1,8 @@
 import time
 import uuid
+import subprocess
+import glob
+import os
 import minimalmodbus
 import serial
 import paho.mqtt.client as mqtt
@@ -70,17 +73,96 @@ VALVE_OPEN = 4100  # RO
 VALVE_CLOSE = 4101  # RO
 ACTUAL_MODE = 4210  # RO, controller mode?
 
-# RS485 data
-PORTNAME = "/dev/ttyUSB0"
+# RS485 USB adapter identification
+# Run this on your Pi to find your adapter's IDs:
+#   udevadm info --query=property --name=/dev/ttyUSB0 | grep -E "ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT"
+USB_VENDOR_ID = "0403"    # Replace with your adapter's vendor ID
+USB_PRODUCT_ID = "6001"   # Replace with your adapter's product ID
 BAUDRATE = 19200
 SLAVE_ADDRESS = 5
 
 data_topic = "ecl110/ecl110_data"
 command_topic = "ecl110/command"
 
+# Watchdog: reboot after this many consecutive fully-failed measurements
+# (i.e. every single register failed in N measurements in a row)
+WATCHDOG_REBOOT_THRESHOLD = 3
+
 Connected = False
 ecl110 = None
 mqttc = None
+consecutive_total_failures = 0  # Watchdog counter
+
+
+def find_usb_serial_port(vendor_id=None, product_id=None):
+    """
+    Find the /dev/ttyUSB* port for a specific USB-to-serial adapter
+    by matching on vendor ID and/or product ID.
+
+    To find your adapter's IDs, run:
+        udevadm info --query=property --name=/dev/ttyUSB0
+    """
+    for device in sorted(glob.glob("/dev/ttyUSB*")):
+        try:
+            result = subprocess.run(
+                ["udevadm", "info", "--query=property", f"--name={device}"],
+                capture_output=True, text=True, timeout=5
+            )
+            props = {}
+            for line in result.stdout.splitlines():
+                if "=" in line:
+                    key, val = line.split("=", 1)
+                    props[key] = val
+
+            match = True
+            if vendor_id and props.get("ID_VENDOR_ID", "").lower() != vendor_id.lower():
+                match = False
+            if product_id and props.get("ID_MODEL_ID", "").lower() != product_id.lower():
+                match = False
+
+            if match:
+                logger.info(f"Found USB serial adapter at {device} "
+                            f"(vendor={props.get('ID_VENDOR_ID')}, "
+                            f"model={props.get('ID_MODEL_ID')})")
+                return device
+
+        except Exception as e:
+            logger.warning(f"Error querying {device}: {e}")
+            continue
+
+    return None
+
+
+def watchdog_reboot(reason):
+    """
+    Cleanly disconnect MQTT and reboot the system.
+    Requires the script to run as root, or the user to have
+    passwordless sudo for /sbin/reboot. Example sudoers entry:
+        pi ALL=(ALL) NOPASSWD: /sbin/reboot
+    """
+    logger.critical(f"WATCHDOG REBOOT: {reason}")
+    logger.critical(f"Consecutive total failures: {consecutive_total_failures}")
+
+    # Try to publish a last-will message so we know why it rebooted
+    try:
+        if mqttc and Connected:
+            reboot_msg = json.dumps({
+                "event": "watchdog_reboot",
+                "reason": reason,
+                "datetime": str(datetime.now()),
+                "consecutive_failures": consecutive_total_failures
+            })
+            mqttc.publish(data_topic, reboot_msg, qos=1)
+            time.sleep(1)  # Give the message time to send
+            mqttc.disconnect()
+            mqttc.loop_stop()
+    except Exception as e:
+        logger.error(f"Error during watchdog cleanup: {e}")
+
+    # Reboot
+    logger.critical("Rebooting now...")
+    time.sleep(1)
+    os.system("sudo /sbin/reboot")
 
 
 def show_instrument_settings(instr: minimalmodbus.Instrument) -> None:
@@ -136,6 +218,7 @@ def on_message(client, userdata, msg):
         logger.info(f"Command: {command}")
 
         if command == 'measure':
+            global consecutive_total_failures
             ecl110_data = {}
             now = datetime.now()
             ecl110_data["datetime"] = str(now)
@@ -179,7 +262,26 @@ def on_message(client, userdata, msg):
                     failed_reads += 1
 
             if failed_reads > 0:
-                logger.warning(f"{failed_reads} register(s) failed to read")
+                logger.warning(f"{failed_reads}/{len(registers)} register(s) failed to read")
+
+            # Watchdog: track consecutive total failures
+            if failed_reads == len(registers):
+                consecutive_total_failures += 1
+                logger.error(f"ALL registers failed! "
+                             f"Consecutive total failures: {consecutive_total_failures}"
+                             f"/{WATCHDOG_REBOOT_THRESHOLD}")
+                if consecutive_total_failures >= WATCHDOG_REBOOT_THRESHOLD:
+                    watchdog_reboot(
+                        f"All {len(registers)} Modbus registers failed to read "
+                        f"in {WATCHDOG_REBOOT_THRESHOLD} consecutive measurements"
+                    )
+                    return  # Won't reach here after reboot, but just in case
+            else:
+                # At least one register succeeded — reset the counter
+                if consecutive_total_failures > 0:
+                    logger.info(f"Modbus communication restored. "
+                                f"Resetting watchdog counter (was {consecutive_total_failures})")
+                consecutive_total_failures = 0
 
             ecl110_data_json = json.dumps(ecl110_data)
             logger.info(f"Publishing: {ecl110_data_json}")
@@ -213,8 +315,20 @@ def on_message(client, userdata, msg):
 def main():
     global ecl110, mqttc, Connected
 
+    # Auto-detect the USB serial port
+    portname = find_usb_serial_port(vendor_id=USB_VENDOR_ID, product_id=USB_PRODUCT_ID)
+    if portname is None:
+        # Fallback: try first available ttyUSB device
+        fallback_ports = sorted(glob.glob("/dev/ttyUSB*"))
+        if fallback_ports:
+            portname = fallback_ports[0]
+            logger.warning(f"Adapter not found by ID, falling back to {portname}")
+        else:
+            logger.error("No USB serial adapter found! Exiting.")
+            return
+
     # Set up connection to ECL110
-    ecl110 = minimalmodbus.Instrument(PORTNAME, SLAVE_ADDRESS)
+    ecl110 = minimalmodbus.Instrument(portname, SLAVE_ADDRESS)
     if ecl110.serial is None:
         logger.error("Instrument.serial is None, exiting...")
         exit()
