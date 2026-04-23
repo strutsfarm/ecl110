@@ -1,75 +1,167 @@
 # ecl110
 
-A lightweight Python service for integrating a **Danfoss ECL110 heating controller** with an MQTT-based automation stack.
+Python service for integrating a **Danfoss ECL110 heating controller** with MQTT.
 
-This project reads control and telemetry values from an ECL110 over **Modbus RTU (RS-485)** and exposes the data through MQTT. It also listens for MQTT commands to trigger measurements and update selected controller parameters.
+The service reads ECL110 values over **Modbus RTU (RS-485)** and publishes them to MQTT using a hierarchical topic model. It also supports writing selected controller values through MQTT `/set` topics.
 
 ---
 
 ## Table of Contents
 - [Overview](#overview)
+- [Architecture (v2)](#architecture-v2)
 - [Key Features](#key-features)
-- [How It Works](#how-it-works)
+- [MQTT Topic Hierarchy](#mqtt-topic-hierarchy)
+- [Writing Values via `/set` Topics](#writing-values-via-set-topics)
+- [Backward Compatibility](#backward-compatibility)
 - [Project Structure](#project-structure)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
-  - [1) Start the bridge service](#1-start-the-bridge-service)
-  - [2) Trigger a measurement](#2-trigger-a-measurement)
-  - [3) Set displacement value](#3-set-displacement-value)
-- [MQTT Contract](#mqtt-contract)
-- [Modbus Registers Covered](#modbus-registers-covered)
 - [Operational Notes](#operational-notes)
 - [Troubleshooting](#troubleshooting)
-- [Known Issues](#known-issues)
+- [Known Limitations](#known-limitations)
 - [License](#license)
 
 ---
 
 ## Overview
-The repository contains a small integration layer intended for heating system monitoring/control scenarios where:
+`ecl110.py` is a long-running bridge service that:
 
-- An ECL110 controller is reachable over serial Modbus RTU (`/dev/ttyUSB0` by default)
-- An MQTT broker is available on the local network
-- External systems (Home Assistant, Node-RED, scripts, etc.) communicate by publishing commands and consuming telemetry
+1. Connects to the ECL110 controller over Modbus RTU
+2. Connects to an MQTT broker
+3. Polls configured registers every **60 seconds**
+4. Publishes updates only when values change
+5. Accepts writes through dedicated MQTT `/set` topics
+6. Keeps a legacy JSON topic for compatibility with existing consumers
 
-The main script (`ecl110.py`) runs as a long-lived process that:
+---
 
-1. Connects to the ECL110 via Modbus
-2. Connects to MQTT with automatic reconnect behavior
-3. Subscribes to a command topic
-4. On command, reads multiple registers and publishes a JSON payload
-5. Optionally writes the displacement register via a command
+## Architecture (v2)
+The service no longer waits for an external `measure` command to trigger reads. Instead, it runs an **internal autonomous polling loop**:
+
+- Poll interval: **60 seconds** (`LOOP_TIME = 60`)
+- First poll happens immediately after startup
+- Subsequent polls run continuously while the process is alive
+
+### Change detection behavior
+Each cycle, the service compares current register values with the last published snapshot:
+
+- If **no value changed**, nothing is published that cycle
+- If **one or more values changed**, it publishes:
+  - Individual hierarchical topic updates for changed points
+  - A full legacy JSON payload to `ecl110/ecl110_data`
+
+This reduces MQTT noise and unnecessary downstream processing.
 
 ---
 
 ## Key Features
-- **Modbus RTU polling** of key ECL110 parameters
-- **MQTT command/response pattern**
-- **Single JSON telemetry payload** with timestamp and register values
-- **Safe register reads with retries** (`3` attempts per register)
-- **MQTT reconnect backoff** for improved network resilience
-- **Simple command utility** (`measure.py`) to request measurement on demand
+- Autonomous Modbus polling every 60 seconds
+- Change-only MQTT publishing
+- Hierarchical MQTT topics per data point
+- Writable parameters via `/set` topics
+- Legacy JSON telemetry topic preserved for backward compatibility
+- Retry logic for Modbus read/write operations
+- MQTT reconnect backoff handling
+- Watchdog reboot after repeated full Modbus-read failure cycles
 
 ---
 
-## How It Works
-- `ecl110.py` subscribes to: `ecl110/command`
-- If it receives:
-  - `{"command": "measure"}` → reads configured registers and publishes to `ecl110/ecl110_data`
-  - `{"command": "displace", "value": <int>}` → writes the displacement register
+## MQTT Topic Hierarchy
+Root topic for per-point telemetry is:
 
-Data exchange is JSON over MQTT with QoS 1 for publish reliability.
+- `/ecl110`
+
+Examples of published telemetry topics:
+
+- `/ecl110/flow_temp_control/slope`
+- `/ecl110/flow_temp_control/displace`
+- `/ecl110/flow_temp_control/flow_temp_min`
+- `/ecl110/flow_temp_control/flow_temp_max`
+- `/ecl110/room_temp_limit/room_gain_max`
+- `/ecl110/room_temp_limit/room_gain_min`
+- `/ecl110/return_temp_limit/limit`
+- `/ecl110/return_temp_limit/return_gain_max`
+- `/ecl110/return_temp_limit/return_gain_min`
+- `/ecl110/return_temp_limit/return_integration_time`
+- `/ecl110/optimization/auto_reduct`
+- `/ecl110/optimization/ramp`
+- `/ecl110/control_parameters/xp`
+- `/ecl110/control_parameters/tn`
+- `/ecl110/temperatures/set_room_temperature`
+- `/ecl110/temperatures/outdoor_temp`
+- `/ecl110/temperatures/room_temp`
+- `/ecl110/temperatures/flow_temp`
+- `/ecl110/temperatures/return_temp`
+- `/ecl110/temperatures/room_set_temp`
+- `/ecl110/temperatures/flow_set_temp`
+- `/ecl110/temperatures/accumulated_outdoor_temp`
+
+### Example subscriber
+```bash
+mosquitto_sub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user -t '/ecl110/#'
+```
+
+Values are JSON-encoded scalar values (for example `"21.5"`, `"0"`, `"-2"`).
+
+---
+
+## Writing Values via `/set` Topics
+Writable parameters are controlled by publishing to the same hierarchy with a `/set` suffix.
+
+### Topic pattern
+- `/ecl110/<group>/<parameter>/set`
+
+### Examples
+- `/ecl110/flow_temp_control/displace/set`
+- `/ecl110/flow_temp_control/slope/set`
+- `/ecl110/return_temp_limit/limit/set`
+- `/ecl110/optimization/ramp/set`
+- `/ecl110/control_parameters/xp/set`
+- `/ecl110/temperatures/set_room_temperature/set`
+
+### Accepted payload formats
+The service accepts either:
+
+1. Plain numeric payload
+2. JSON payload with a `value` key
+
+Examples:
+
+```bash
+# Plain numeric payload
+mosquitto_pub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user \
+  -t '/ecl110/flow_temp_control/displace/set' -m '2'
+```
+
+```bash
+# JSON payload
+mosquitto_pub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user \
+  -t '/ecl110/flow_temp_control/displace/set' -m '{"value":2}'
+```
+
+If write succeeds, the service updates internal cache for immediate state consistency.
+
+---
+
+## Backward Compatibility
+For consumers that still rely on the previous JSON contract, the service continues publishing to:
+
+- `ecl110/ecl110_data`
+
+Payload includes a timestamp and the full set of measured values (including legacy status fields such as `pump`, `valve_open`, `valve_closed`, `actual_mode`).
+
+> Compatibility note: the legacy JSON topic is now emitted only when at least one measured value changes.
 
 ---
 
 ## Project Structure
 ```text
 ecl110/
-├── ecl110.py      # Main Modbus↔MQTT bridge service
-├── measure.py     # Helper script that publishes {"command": "measure"}
-└── measure.sh     # Shell launcher (currently references a non-existing filename)
+├── ecl110.py      # Main Modbus↔MQTT bridge service (v2 architecture)
+├── measure.py     # Legacy helper script for command-based measurement flow
+└── measure.sh     # Shell launcher
 ```
 
 ---
@@ -77,11 +169,11 @@ ecl110/
 ## Requirements
 ### Hardware
 - Danfoss ECL110 controller (or compatible Modbus RTU target)
-- RS-485/USB adapter exposed as a serial device (default: `/dev/ttyUSB0`)
+- RS-485/USB adapter (default serial device pattern: `/dev/ttyUSB*`)
 
 ### Software
-- Python 3.8+ (recommended)
-- MQTT broker (default configured host: `192.168.1.222`, port `1883`)
+- Python 3.8+
+- MQTT broker (default: `192.168.1.222:1883`)
 
 ### Python dependencies
 - `minimalmodbus`
@@ -101,152 +193,67 @@ source .venv/bin/activate
 pip install minimalmodbus pyserial paho-mqtt
 ```
 
-Optional sanity check:
-```bash
-python3 -m py_compile ecl110.py measure.py
-```
-
 ---
 
 ## Configuration
-The project currently uses in-file constants in `ecl110.py` and `measure.py`.
+Configuration is currently in-code (`ecl110.py` / `measure.py`).
 
-### MQTT settings
+### MQTT defaults
 ```python
 MQTT_BROKER = "192.168.1.222"
 MQTT_PORT = 1883
-mqtt username/password = "mqtt-user" / "mqtt-user"
+username/password = "mqtt-user" / "mqtt-user"
 ```
 
-### Serial/Modbus settings
+### Modbus defaults
 ```python
-PORTNAME = "/dev/ttyUSB0"
 BAUDRATE = 19200
 SLAVE_ADDRESS = 5
 serial parity = EVEN
 ```
 
-### MQTT topics
-- Command topic: `ecl110/command`
-- Data topic: `ecl110/ecl110_data`
-
-> For production usage, consider moving credentials and connection values to environment variables or a config file.
+### Poll interval
+```python
+LOOP_TIME = 60
+```
 
 ---
 
 ## Usage
+Start the service:
 
-### 1) Start the bridge service
 ```bash
 python3 ecl110.py
 ```
 
-This process stays running and waits for MQTT commands.
-
-### 2) Trigger a measurement
-Use the helper:
-```bash
-python3 measure.py
-```
-
-Or publish manually:
-```bash
-mosquitto_pub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user \
-  -t ecl110/command -m '{"command":"measure"}'
-```
-
-### 3) Set displacement value
-Publish a command like:
-```bash
-mosquitto_pub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user \
-  -t ecl110/command -m '{"command":"displace","value":2}'
-```
-
----
-
-## MQTT Contract
-### Command messages (`ecl110/command`)
-Examples:
-```json
-{"command":"measure"}
-```
-
-```json
-{"command":"displace","value":2}
-```
-
-### Telemetry output (`ecl110/ecl110_data`)
-Example payload shape:
-```json
-{
-  "datetime": "2026-04-17 10:20:30.123456",
-  "slope": 1.4,
-  "displace": 0,
-  "flow_temp_min": 30,
-  "flow_temp_max": 70,
-  "room_temp": 21.5,
-  "flow_temp": 45.2,
-  "return_temp": 37.0,
-  "pump": 1,
-  "valve_open": 0,
-  "valve_closed": 1,
-  "actual_mode": 2
-}
-```
-
-If individual register reads fail, the script logs warnings and omits unreadable values.
-
----
-
-## Modbus Registers Covered
-The implementation reads/writes a curated set of ECL110 registers grouped by control area, including:
-
-- Flow temperature curve parameters (slope/displacement/min/max)
-- Room and return temperature control gains
-- Optimization parameters
-- Control parameters (`xp`, `tn`)
-- Measured temperatures (outdoor/room/flow/return)
-- Binary status values (pump/valve/mode)
-
-Register addresses and decimal/signed handling are defined as constants in `ecl110.py`.
+The process runs continuously, polling every 60 seconds and publishing only changed values.
 
 ---
 
 ## Operational Notes
-- MQTT client IDs are randomized (`uuid` suffix) to avoid broker session collisions.
-- `safe_read_register()` retries failed Modbus reads up to 3 times with short delay.
-- MQTT reconnect strategy uses exponential delay (`1s` to `120s`).
-- The bridge publishes with **QoS 1** and checks publish return codes.
+- MQTT client IDs are randomized to avoid collisions
+- Modbus reads/writes are retried up to 3 times
+- MQTT reconnect uses exponential delay (`1s` to `120s`)
+- Watchdog triggers reboot after 3 consecutive fully-failed measurement cycles
+- Publish QoS is 1 for reliability
 
 ---
 
 ## Troubleshooting
-- **Cannot open serial device**
-  - Check adapter path (`/dev/ttyUSB0`), user permissions (`dialout` group), and cable wiring.
-- **MQTT connect failures**
-  - Verify broker IP/port, credentials, and firewall/network reachability.
-- **No data returned**
-  - Confirm correct Modbus slave address, baud rate, parity, and physical bus integrity.
-- **Intermittent missing fields**
-  - Some register reads may fail transiently; inspect logs for per-register errors.
+- **Serial device not found**: verify adapter, wiring, permissions (`dialout`), and USB IDs
+- **MQTT connection issues**: verify broker IP, credentials, network/firewall
+- **No topic updates**: if controller values are stable, no publish occurs by design (change-only publishing)
+- **Write does not apply**: verify topic path ends with `/set` and payload is numeric or `{"value": ...}`
 
 ---
 
-## Known Issues
-1. `measure.sh` currently calls `python measure_ecl110.py`, but the repository contains `measure.py`.
-   - Suggested fix:
-     ```bash
-     python measure.py
-     ```
-
-2. Settings are hardcoded in source files (broker, credentials, serial settings).
-   - Consider external configuration for safer deployments.
-
-3. No dependency lockfile (`requirements.txt`/`pyproject.toml`) is included.
+## Known Limitations
+- Broker/serial credentials and connection settings are hardcoded
+- No packaged dependency lockfile is included
+- `measure.py` reflects legacy command-trigger flow and is optional in v2 architecture
 
 ---
 
 ## License
-No license file is included in the repository at the time of analysis.
-
-If you intend to distribute or reuse this project, add an explicit license (for example, MIT, Apache-2.0, or GPL) in a `LICENSE` file.
+No license file is currently included.
+If you plan to distribute this project, add a `LICENSE` file (for example MIT, Apache-2.0, or GPL).
