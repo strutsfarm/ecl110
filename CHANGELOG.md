@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## v2.2.0 - 2026-04-27
+
+### Release Type
+- **Bug fix release**
+
+### Fixes
+- Corrected MQTT topic paths to remove the leading slash.
+- Topics now start with `ecl110/` instead of `/ecl110/`.
+
+### Compatibility Implications
+- **Potentially breaking for topic routing**: Any subscriber, automation, or publisher still using topics that begin with `/ecl110/` must be updated to `ecl110/`.
+- The legacy JSON topic `ecl110/ecl110_data` remains available for compatibility.
+- No protocol, payload format, or register mapping changes were introduced in this release.
+
 ## v2.0.0 - 2026-04-23
 
 ### Overview
