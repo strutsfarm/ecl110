@@ -71,36 +71,36 @@ This reduces MQTT noise and unnecessary downstream processing.
 ## MQTT Topic Hierarchy
 Root topic for per-point telemetry is:
 
-- `/ecl110`
+- `ecl110`
 
 Examples of published telemetry topics:
 
-- `/ecl110/flow_temp_control/slope`
-- `/ecl110/flow_temp_control/displace`
-- `/ecl110/flow_temp_control/flow_temp_min`
-- `/ecl110/flow_temp_control/flow_temp_max`
-- `/ecl110/room_temp_limit/room_gain_max`
-- `/ecl110/room_temp_limit/room_gain_min`
-- `/ecl110/return_temp_limit/limit`
-- `/ecl110/return_temp_limit/return_gain_max`
-- `/ecl110/return_temp_limit/return_gain_min`
-- `/ecl110/return_temp_limit/return_integration_time`
-- `/ecl110/optimization/auto_reduct`
-- `/ecl110/optimization/ramp`
-- `/ecl110/control_parameters/xp`
-- `/ecl110/control_parameters/tn`
-- `/ecl110/temperatures/set_room_temperature`
-- `/ecl110/temperatures/outdoor_temp`
-- `/ecl110/temperatures/room_temp`
-- `/ecl110/temperatures/flow_temp`
-- `/ecl110/temperatures/return_temp`
-- `/ecl110/temperatures/room_set_temp`
-- `/ecl110/temperatures/flow_set_temp`
-- `/ecl110/temperatures/accumulated_outdoor_temp`
+- `ecl110/flow_temp_control/slope`
+- `ecl110/flow_temp_control/displace`
+- `ecl110/flow_temp_control/flow_temp_min`
+- `ecl110/flow_temp_control/flow_temp_max`
+- `ecl110/room_temp_limit/room_gain_max`
+- `ecl110/room_temp_limit/room_gain_min`
+- `ecl110/return_temp_limit/limit`
+- `ecl110/return_temp_limit/return_gain_max`
+- `ecl110/return_temp_limit/return_gain_min`
+- `ecl110/return_temp_limit/return_integration_time`
+- `ecl110/optimization/auto_reduct`
+- `ecl110/optimization/ramp`
+- `ecl110/control_parameters/xp`
+- `ecl110/control_parameters/tn`
+- `ecl110/temperatures/set_room_temperature`
+- `ecl110/temperatures/outdoor_temp`
+- `ecl110/temperatures/room_temp`
+- `ecl110/temperatures/flow_temp`
+- `ecl110/temperatures/return_temp`
+- `ecl110/temperatures/room_set_temp`
+- `ecl110/temperatures/flow_set_temp`
+- `ecl110/temperatures/accumulated_outdoor_temp`
 
 ### Example subscriber
 ```bash
-mosquitto_sub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user -t '/ecl110/#'
+mosquitto_sub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user -t 'ecl110/#'
 ```
 
 Values are JSON-encoded scalar values (for example `"21.5"`, `"0"`, `"-2"`).
@@ -111,15 +111,15 @@ Values are JSON-encoded scalar values (for example `"21.5"`, `"0"`, `"-2"`).
 Writable parameters are controlled by publishing to the same hierarchy with a `/set` suffix.
 
 ### Topic pattern
-- `/ecl110/<group>/<parameter>/set`
+- `ecl110/<group>/<parameter>/set`
 
 ### Examples
-- `/ecl110/flow_temp_control/displace/set`
-- `/ecl110/flow_temp_control/slope/set`
-- `/ecl110/return_temp_limit/limit/set`
-- `/ecl110/optimization/ramp/set`
-- `/ecl110/control_parameters/xp/set`
-- `/ecl110/temperatures/set_room_temperature/set`
+- `ecl110/flow_temp_control/displace/set`
+- `ecl110/flow_temp_control/slope/set`
+- `ecl110/return_temp_limit/limit/set`
+- `ecl110/optimization/ramp/set`
+- `ecl110/control_parameters/xp/set`
+- `ecl110/temperatures/set_room_temperature/set`
 
 ### Accepted payload formats
 The service accepts either:
@@ -132,13 +132,13 @@ Examples:
 ```bash
 # Plain numeric payload
 mosquitto_pub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user \
-  -t '/ecl110/flow_temp_control/displace/set' -m '2'
+  -t 'ecl110/flow_temp_control/displace/set' -m '2'
 ```
 
 ```bash
 # JSON payload
 mosquitto_pub -h 192.168.1.222 -p 1883 -u mqtt-user -P mqtt-user \
-  -t '/ecl110/flow_temp_control/displace/set' -m '{"value":2}'
+  -t 'ecl110/flow_temp_control/displace/set' -m '{"value":2}'
 ```
 
 If write succeeds, the service updates internal cache for immediate state consistency.

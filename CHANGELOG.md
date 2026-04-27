@@ -19,12 +19,12 @@ This release introduces a major architectural refactor of the ECL110 MQTT integr
   - Reduces MQTT traffic and downstream processing load
 
 - **Hierarchical MQTT topic model**
-  - Added per-point topics under `/ecl110/...`
+  - Added per-point topics under `ecl110/...`
   - Example topics:
-    - `/ecl110/flow_temp_control/slope`
-    - `/ecl110/flow_temp_control/displace`
-    - `/ecl110/temperatures/outdoor_temp`
-    - `/ecl110/return_temp_limit/limit`
+    - `ecl110/flow_temp_control/slope`
+    - `ecl110/flow_temp_control/displace`
+    - `ecl110/temperatures/outdoor_temp`
+    - `ecl110/return_temp_limit/limit`
 
 - **Writable `/set` topics**
   - Added write support via MQTT topics ending in `/set`
@@ -32,7 +32,7 @@ This release introduces a major architectural refactor of the ECL110 MQTT integr
     - Plain numeric payload (`2`)
     - JSON payload (`{"value":2}`)
   - Example write topic:
-    - `/ecl110/flow_temp_control/displace/set`
+    - `ecl110/flow_temp_control/displace/set`
 
 - **Legacy JSON compatibility channel retained**
   - Continues publishing full JSON payload on `ecl110/ecl110_data`
@@ -49,14 +49,14 @@ This release introduces a major architectural refactor of the ECL110 MQTT integr
 
 ### Migration Notes (from previous version)
 1. **Consumers of telemetry**
-   - Preferred: subscribe to `/ecl110/#` and process individual point topics.
+   - Preferred: subscribe to `ecl110/#` and process individual point topics.
    - If needed, continue consuming `ecl110/ecl110_data` with existing JSON parser.
 
 2. **Writers / control commands**
    - Replace command-based write messages with direct `/set` topic writes.
    - Example migration:
      - Old: publish `{"command":"displace","value":2}` to `ecl110/command`
-     - New: publish `2` (or `{"value":2}`) to `/ecl110/flow_temp_control/displace/set`
+     - New: publish `2` (or `{"value":2}`) to `ecl110/flow_temp_control/displace/set`
 
 3. **Automation and dashboards**
    - Update topic subscriptions and entity mappings to new hierarchy.

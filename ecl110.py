@@ -24,7 +24,7 @@ MQTT_PORT = 1883
 
 LOOP_TIME = 60
 JSON_DATA_TOPIC = "ecl110/ecl110_data"  # Kept for backward compatibility
-TOPIC_ROOT = "/ecl110"
+TOPIC_ROOT = "ecl110"
 
 # Watchdog: reboot after this many consecutive fully-failed measurements
 # (i.e. every single register failed in N measurements in a row)
